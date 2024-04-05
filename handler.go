@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -38,11 +39,7 @@ func (h Handler) getNextDate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err = w.Write([]byte(next)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusOK, []byte(next))
 }
 
 func (h Handler) postTask(w http.ResponseWriter, r *http.Request) {
@@ -103,11 +100,7 @@ func (h Handler) postTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusCreated)
-	if _, err = w.Write(resp); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusCreated, resp)
 }
 
 func (h Handler) getTasks(w http.ResponseWriter, r *http.Request) {
@@ -129,11 +122,7 @@ func (h Handler) getTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err = w.Write(resp); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusOK, resp)
 }
 
 func (h Handler) getTask(w http.ResponseWriter, r *http.Request) {
@@ -162,11 +151,7 @@ func (h Handler) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err = w.Write(resp); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusOK, resp)
 }
 
 func (h Handler) putTask(w http.ResponseWriter, r *http.Request) {
@@ -210,11 +195,7 @@ func (h Handler) putTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	if _, err = w.Write([]byte("{}")); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusAccepted, []byte("{}"))
 }
 
 func (h Handler) postDone(w http.ResponseWriter, r *http.Request) {
@@ -252,11 +233,7 @@ func (h Handler) postDone(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err = w.Write([]byte("{}")); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusOK, []byte("{}"))
 }
 
 func (h Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
@@ -273,81 +250,83 @@ func (h Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	if _, err = w.Write([]byte("{}")); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusAccepted, []byte("{}"))
 }
 
 func (h Handler) signin(w http.ResponseWriter, r *http.Request) {
-	var buf bytes.Buffer
+	env := os.Getenv("TODO_PASSWORD")
+	if len(env) == 0 {
+		return
+	}
 
+	var buf bytes.Buffer
 	_, err := buf.ReadFrom(r.Body)
 	if err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusBadRequest)
+		http.Error(w, wrappError(err.Error()), http.StatusUnauthorized)
 		return
 	}
 	defer r.Body.Close()
 
 	var m map[string]string
 	if err = json.Unmarshal(buf.Bytes(), &m); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusBadRequest)
+		http.Error(w, wrappError(err.Error()), http.StatusUnauthorized)
 		return
 	}
 
 	pass, ok := m["password"]
 	if !ok {
-		http.Error(w, wrappError("Не задан пароль"), http.StatusBadRequest)
+		http.Error(w, wrappError("Не задан пароль"), http.StatusUnauthorized)
 		return
 	}
 
-	env := os.Getenv("TODO_PASSWORD")
-	var resp map[string]string
-	if len(env) > 0 && env == pass {
-		resp = map[string]string{"token": hash(env)}
-	} else {
-		resp = map[string]string{"error": "Неверный пароль"}
+	if pass != env {
+		http.Error(w, wrappError("Неверный пароль"), http.StatusUnauthorized)
+		return
 	}
 
-	t, err := json.Marshal(resp)
+	token, err := json.Marshal(map[string]string{"token": hash(env)})
 	if err != nil {
 		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err = w.Write(t); err != nil {
-		http.Error(w, wrappError(err.Error()), http.StatusInternalServerError)
-	}
+	h.writeResponse(w, http.StatusOK, token)
 }
 
 func (h Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// смотрим наличие пароля
 		pass := os.Getenv("TODO_PASSWORD")
-		if len(pass) > 0 {
-			var jwt string // JWT-токен из куки
-			// получаем куку
-			cookie, err := r.Cookie("token")
-			if err == nil {
-				jwt = cookie.Value
-			}
-			var valid bool
-			// здесь код для валидации и проверки JWT-токена
-			// ...
-			h := hash(pass)
-			valid = h == jwt
 
-			if !valid {
-				// возвращаем ошибку авторизации 401
-				http.Error(w, "Authentification required", http.StatusUnauthorized)
-				return
-			}
+		if len(pass) == 0 {
+			next(w, r)
+			return
+		}
+
+		// получаем куку
+		cookie, err := r.Cookie("token")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		jwt := cookie.Value // JWT-токен из куки
+		if hash(pass) != jwt {
+			// возвращаем ошибку авторизации 401
+			http.Error(w, "Authentification required", http.StatusUnauthorized)
+			return
 		}
 		next(w, r)
 	})
+}
+
+func (h Handler) writeResponse(w http.ResponseWriter, statusCode int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+
+	if _, err := w.Write(body); err != nil {
+		log.Println(err.Error())
+	}
 }
 
 func wrappError(message string) string {
